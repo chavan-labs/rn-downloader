@@ -1,75 +1,106 @@
 # 🚀 react-native-downloader
 
-The easiest way to download files in React Native.
-Stop rewriting file download logic in React Native!
+The easiest way to download files in React Native — with background support, pause/resume, and cache management built-in.
 
-“The simplest and most reliable way to download files in React Native with progress, permissions, and file handling built-in.”
+> 100% pure native code (Kotlin + Swift). Zero third-party dependencies.
 
 ## ✨ Features
 
-- 📥 **Download with progress:** Get clean `0 → 100` progress natively without UI freezing.
-- 📂 **Smart file naming:** Auto-detects extensions natively if not provided.
-- 🔐 **Auto permission handling:** Graceful fallback to cache directories or handles permissions automatically on Android.
-- ⚡ **Lightweight & fast:** 100% pure native code (Kotlin and Swift) **without any third-party dependencies**.
-- 🛠 **Structured Error Handling:** Clean JS promises with `{ success: false, error: 'NETWORK_ERROR' }` instead of silent failures.
+- 📥 **Download with progress** — clean `0 → 100` progress natively, no UI freezing
+- 🌙 **Background downloads** — survive app suspension (iOS background URLSession + Android DownloadManager)
+- ⏸ **Pause & Resume** — resume mid-download using HTTP Range requests
+- ❌ **Cancel** — cancel any active download, partial files are cleaned up automatically
+- 📦 **Cache management** — list, delete individual files, or clear the entire cache
+- 📂 **Smart file naming** — auto-detects filename from URL if not provided
+- 🛠 **Structured errors** — `{ success: false, error: '...' }` instead of silent failures
+- ⚡ **Lightweight** — zero dependencies
 
 ---
 
 ## 💻 Installation
 
 ```sh
-npm install @chavanrk/react-native-downloader
+npm install @rohit97/react-native-downloader
 # or
-yarn add @chavanrk/react-native-downloader
+yarn add @rohit97/react-native-downloader
 ```
 
-_Note: Since this library uses pure native TurboModules/NativeModules, please make sure to run `pod install` in your `ios/` directory!_
+> iOS: run `pod install` in your `ios/` directory after installing.
 
 ---
 
-## ✨ Example Usage
+## 📖 API
+
+### `download(options)`
 
 ```javascript
-import { download } from '@chavanrk/react-native-downloader';
+import { download, onDownloadComplete, onDownloadError } from '@rohit97/react-native-downloader';
 
-const runDownload = async () => {
-  const result = await download({
-    url: 'https://example.com/file.pdf',
-    // fileName: 'custom_name.pdf', // Optional! Auto-detects if missing.
-    onProgress: (p) => {
-      console.log(`Downloading: ${p}%`);
-    },
-  });
+// Foreground download
+const result = await download({
+  url: 'https://example.com/file.pdf',
+  fileName: 'my_file.pdf',
+  onProgress: (percent) => console.log(`Progress: ${percent}%`),
+});
+if (result.success) {
+  console.log('Saved to:', result.filePath);
+  console.log('Download ID:', result.downloadId);
+}
 
-  if (result.success) {
-    console.log('Downloaded successfully to:', result.filePath);
-  } else {
-    console.error('Download failed:', result.error);
-  }
-};
+// Background download (resolves immediately with downloadId)
+const { downloadId } = await download({ url: 'https://example.com/video.mp4', background: true });
+const unsub = onDownloadComplete((r) => { console.log('Done:', r.filePath); unsub(); });
 ```
 
 ---
 
-## ⚡ Growth Strategy (Real Talk)
+### Pause / Resume / Cancel
 
-To make this package successful, ensure you:
+```javascript
+import { download, pauseDownload, resumeDownload, cancelDownload } from '@rohit97/react-native-downloader';
 
-1. **Add a Demo GIF:** Include a high-quality GIF of a progress bar here.
-2. **Post on:**
-   - Reddit (`r/reactnative` & `r/reactjs`)
-   - Twitter & LinkedIn
-3. **GitHub Title:** “Stop rewriting file download logic in React Native”
-4. **Simply be better:** “Do one thing better than everyone else.” This package focuses explicitly on taking the headache out of downloading headers, arrays, and progress loops.
+const { downloadId } = await download({
+  url: 'https://example.com/file.zip',
+  onProgress: (p) => console.log(`${p}%`),
+});
+
+await pauseDownload(downloadId);   // pause
+await resumeDownload(downloadId);  // resume from where it left off (HTTP Range)
+await cancelDownload(downloadId);  // cancel + delete partial file
+```
 
 ---
 
-## 🔥 Future v2 Ideas
+### Cache Management
 
-- Background downloads (app closed/suspended)
-- Pause / resume controls
-- Parallel concurrent downloads
-- Expanded local Cache management API
+```javascript
+import { getCachedFiles, deleteFile, clearCache } from '@rohit97/react-native-downloader';
+
+const { files } = await getCachedFiles();
+files?.forEach((f) => console.log(f.fileName, f.size));
+
+await deleteFile('/path/to/file.pdf');
+await clearCache();
+```
+
+---
+
+## 📐 Type Reference
+
+| Type | Fields |
+|---|---|
+| `DownloadOptions` | `url`, `fileName?`, `background?`, `onProgress?` |
+| `DownloadResult` | `success`, `filePath?`, `downloadId?`, `error?` |
+| `ActionResult` | `success`, `error?` |
+| `CachedFile` | `fileName`, `filePath`, `size` (bytes), `modifiedAt` (ms) |
+| `CacheResult` | `success`, `files?`, `error?` |
+
+---
+
+## 🔗 Links
+
+- [GitHub](https://github.com/chavanRk/react-native-downloader)
+- [npm](https://www.npmjs.com/package/@rohit97/react-native-downloader)
 
 ---
 
