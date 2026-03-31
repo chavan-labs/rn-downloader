@@ -1,5 +1,5 @@
 {
-  "name": "@rohit97/react-native-downloader",
+  "name": "rn-downloader",
   "version": "2.0.0",
   "description": "The simplest and most reliable way to download files in React Native with progress, permissions, and file handling built-in.",
   "main": "./lib/module/index.js",

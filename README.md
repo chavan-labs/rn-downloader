@@ -20,9 +20,9 @@ The easiest way to download files in React Native — with background support, p
 ## 💻 Installation
 
 ```sh
-npm install @rohit97/react-native-downloader
+npm install rn-downloader
 # or
-yarn add @rohit97/react-native-downloader
+yarn add rn-downloader
 ```
 
 > iOS: run `pod install` in your `ios/` directory after installing.
@@ -34,7 +34,7 @@ yarn add @rohit97/react-native-downloader
 ### `download(options)`
 
 ```javascript
-import { download, onDownloadComplete, onDownloadError } from '@rohit97/react-native-downloader';
+import { download, onDownloadComplete, onDownloadError } from 'rn-downloader';
 
 // Foreground download
 const result = await download({
@@ -48,8 +48,14 @@ if (result.success) {
 }
 
 // Background download (resolves immediately with downloadId)
-const { downloadId } = await download({ url: 'https://example.com/video.mp4', background: true });
-const unsub = onDownloadComplete((r) => { console.log('Done:', r.filePath); unsub(); });
+const { downloadId } = await download({
+  url: 'https://example.com/video.mp4',
+  background: true,
+});
+const unsub = onDownloadComplete((r) => {
+  console.log('Done:', r.filePath);
+  unsub();
+});
 ```
 
 ---
@@ -57,16 +63,21 @@ const unsub = onDownloadComplete((r) => { console.log('Done:', r.filePath); unsu
 ### Pause / Resume / Cancel
 
 ```javascript
-import { download, pauseDownload, resumeDownload, cancelDownload } from '@rohit97/react-native-downloader';
+import {
+  download,
+  pauseDownload,
+  resumeDownload,
+  cancelDownload,
+} from 'rn-downloader';
 
 const { downloadId } = await download({
   url: 'https://example.com/file.zip',
   onProgress: (p) => console.log(`${p}%`),
 });
 
-await pauseDownload(downloadId);   // pause
-await resumeDownload(downloadId);  // resume from where it left off (HTTP Range)
-await cancelDownload(downloadId);  // cancel + delete partial file
+await pauseDownload(downloadId); // pause
+await resumeDownload(downloadId); // resume from where it left off (HTTP Range)
+await cancelDownload(downloadId); // cancel + delete partial file
 ```
 
 ---
@@ -74,7 +85,7 @@ await cancelDownload(downloadId);  // cancel + delete partial file
 ### Cache Management
 
 ```javascript
-import { getCachedFiles, deleteFile, clearCache } from '@rohit97/react-native-downloader';
+import { getCachedFiles, deleteFile, clearCache } from 'rn-downloader';
 
 const { files } = await getCachedFiles();
 files?.forEach((f) => console.log(f.fileName, f.size));
@@ -87,20 +98,20 @@ await clearCache();
 
 ## 📐 Type Reference
 
-| Type | Fields |
-|---|---|
-| `DownloadOptions` | `url`, `fileName?`, `background?`, `onProgress?` |
-| `DownloadResult` | `success`, `filePath?`, `downloadId?`, `error?` |
-| `ActionResult` | `success`, `error?` |
-| `CachedFile` | `fileName`, `filePath`, `size` (bytes), `modifiedAt` (ms) |
-| `CacheResult` | `success`, `files?`, `error?` |
+| Type              | Fields                                                    |
+| ----------------- | --------------------------------------------------------- |
+| `DownloadOptions` | `url`, `fileName?`, `background?`, `onProgress?`          |
+| `DownloadResult`  | `success`, `filePath?`, `downloadId?`, `error?`           |
+| `ActionResult`    | `success`, `error?`                                       |
+| `CachedFile`      | `fileName`, `filePath`, `size` (bytes), `modifiedAt` (ms) |
+| `CacheResult`     | `success`, `files?`, `error?`                             |
 
 ---
 
 ## 🔗 Links
 
 - [GitHub](https://github.com/chavanRk/react-native-downloader)
-- [npm](https://www.npmjs.com/package/@rohit97/react-native-downloader)
+- [npm](https://www.npmjs.com/package/rn-downloader)
 
 ---
 
