@@ -1,4 +1,4 @@
-# 🚀 react-native-downloader
+# 🚀 rn-downloader
 
 The easiest way to download files in React Native — with background support, pause/resume, and cache management built-in.
 
