@@ -10,7 +10,7 @@ The easiest way to download files in React Native — with background support, p
 - 🌙 **Background downloads** — survive app suspension (iOS background URLSession + Android DownloadManager)
 - ⏸ **Pause & Resume** — resume mid-download using HTTP Range requests
 - ❌ **Cancel** — cancel any active download, partial files are cleaned up automatically
-- 📦 **Cache management** — list, delete individual files, or clear the entire cache
+- 📦 **File management** — list, delete individual files, or clear all downloads from Downloads folder
 - 📂 **Smart file naming** — auto-detects filename from URL if not provided
 - 🛠 **Structured errors** — `{ success: false, error: '...' }` instead of silent failures
 - ⚡ **Lightweight** — zero dependencies
@@ -87,10 +87,14 @@ await cancelDownload(downloadId); // cancel + delete partial file
 ```javascript
 import { getCachedFiles, deleteFile, clearCache } from 'rn-downloader';
 
+// List all downloaded files in Downloads folder
 const { files } = await getCachedFiles();
 files?.forEach((f) => console.log(f.fileName, f.size));
 
+// Delete a specific file
 await deleteFile('/path/to/file.pdf');
+
+// Clear all downloads from Downloads folder
 await clearCache();
 ```
 

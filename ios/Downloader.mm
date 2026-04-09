@@ -55,9 +55,16 @@ RCT_EXPORT_MODULE()
 }
 
 - (NSURL *)destURLForFileName:(NSString *)fileName {
-    NSURL *cacheDir = [[NSFileManager defaultManager]
-        URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
-    return [cacheDir URLByAppendingPathComponent:fileName];
+    NSURL *downloadsDir = [[NSFileManager defaultManager]
+        URLsForDirectory:NSDownloadsDirectory inDomains:NSUserDomainMask].firstObject;
+    if (!downloadsDir) {
+        // Fallback for iOS < 16: use Documents/Downloads
+        NSURL *docsDir = [[NSFileManager defaultManager]
+            URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        downloadsDir = [docsDir URLByAppendingPathComponent:@"Downloads"];
+        [[NSFileManager defaultManager] createDirectoryAtURL:downloadsDir withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    return [downloadsDir URLByAppendingPathComponent:fileName];
 }
 
 - (NSString *)fileNameFromOptions:(NSDictionary *)options task:(NSURLSessionDownloadTask *)task {
@@ -161,12 +168,18 @@ RCT_EXPORT_MODULE()
 // ─── getCachedFiles ───────────────────────────────────────────────────────────
 
 - (void)getCachedFiles:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-    NSURL *cacheDir = [[NSFileManager defaultManager]
-        URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *downloadsDir = [[NSFileManager defaultManager]
+        URLsForDirectory:NSDownloadsDirectory inDomains:NSUserDomainMask].firstObject;
+    if (!downloadsDir) {
+        // Fallback for iOS < 16
+        NSURL *docsDir = [[NSFileManager defaultManager]
+            URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        downloadsDir = [docsDir URLByAppendingPathComponent:@"Downloads"];
+    }
 
     NSError *error;
     NSArray<NSURL *> *files = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtURL:cacheDir
+        contentsOfDirectoryAtURL:downloadsDir
         includingPropertiesForKeys:@[NSURLFileSizeKey, NSURLContentModificationDateKey]
         options:NSDirectoryEnumerationSkipsHiddenFiles
         error:&error];
@@ -208,12 +221,18 @@ RCT_EXPORT_MODULE()
 // ─── clearCache ───────────────────────────────────────────────────────────────
 
 - (void)clearCache:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-    NSURL *cacheDir = [[NSFileManager defaultManager]
-        URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *downloadsDir = [[NSFileManager defaultManager]
+        URLsForDirectory:NSDownloadsDirectory inDomains:NSUserDomainMask].firstObject;
+    if (!downloadsDir) {
+        // Fallback for iOS < 16
+        NSURL *docsDir = [[NSFileManager defaultManager]
+            URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        downloadsDir = [docsDir URLByAppendingPathComponent:@"Downloads"];
+    }
 
     NSError *error;
     NSArray<NSURL *> *files = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtURL:cacheDir
+        contentsOfDirectoryAtURL:downloadsDir
         includingPropertiesForKeys:nil
         options:NSDirectoryEnumerationSkipsHiddenFiles
         error:&error];

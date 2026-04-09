@@ -3,6 +3,7 @@ package com.downloader
 import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.Promise
@@ -78,7 +79,7 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
         setTitle(fileName)
         setDescription("Downloading $fileName")
         setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        val dest = File(reactContext.cacheDir, fileName)
+        val dest = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName)
         setDestinationUri(Uri.fromFile(dest))
       }
       val bgId = dm.enqueue(request)
@@ -101,7 +102,7 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
     thread {
       try {
         var resumeFrom = state.bytesDownloaded
-        val destFile = File(reactContext.cacheDir, fileName)
+        val destFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName)
 
         val url = URL(urlString)
         val connection = url.openConnection() as HttpURLConnection
@@ -238,8 +239,8 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
 
   override fun getCachedFiles(promise: Promise) {
     try {
-      val cacheDir = reactContext.cacheDir
-      val files = cacheDir.listFiles() ?: emptyArray()
+      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+      val files = downloadsDir.listFiles() ?: emptyArray()
       val list = Arguments.createArray()
       for (f in files) {
         if (!f.isFile) continue
@@ -276,8 +277,8 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
 
   override fun clearCache(promise: Promise) {
     try {
-      val cacheDir = reactContext.cacheDir
-      cacheDir.listFiles()?.forEach { it.delete() }
+      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+      downloadsDir.listFiles()?.forEach { it.delete() }
       promise.resolve(Arguments.createMap().apply { putBoolean("success", true) })
     } catch (e: Exception) {
       promise.resolve(Arguments.createMap().apply {
