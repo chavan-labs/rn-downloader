@@ -117,6 +117,13 @@ await clearCache();
 - [GitHub](https://github.com/chavanRk/react-native-downloader)
 - [npm](https://www.npmjs.com/package/rn-downloader)
 
+
+### Note:
+
+- The server must allow direct downloads (no authentication, redirects etc).
+- Large files and media are supported, including background and resumable downloads.
+- DRM-protected or streaming-only URLs (like some video services) are not supported.
+
 ---
 
 _Made natively for the community 🤝_
