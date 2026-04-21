@@ -14,7 +14,7 @@ The easiest way to download files in React Native — with background support, p
 
 ⭐ **Star this repo if you found it useful** — it helps others discover the project!
 
-## 🤔 Why this project?
+## 🤔 Problems?
 
 Most React Native file download solutions have one or more of these problems:
 
@@ -27,22 +27,22 @@ Most React Native file download solutions have one or more of these problems:
 
 ## ✨ Features
 
-- 📥 **Download with progress** — clean `0 → 100` progress natively, no UI freezing
-- 🌙 **Background downloads** — survive app suspension (iOS background URLSession + Android DownloadManager)
-- ⏸ **Pause & Resume** — resume mid-download using HTTP Range requests
-- ❌ **Cancel** — cancel any active download, partial files are cleaned up automatically
-- 🔄 **Re-attach** — reconnect to background downloads after app restart
-- 🔑 **Custom Headers** — support for Authorization tokens and custom metadata
-- 📂 **Custom Destinations** — save to `downloads`, `cache`, or `documents` folders
-- 📤 **Multipart Upload** — simple, native file uploading
-- 🛡️ **Checksum Validation** — verify file integrity (MD5, SHA1, SHA256) after download
-- 🔢 **Base64 & Data URI Support** — convert base64 strings and data URIs to files natively
-- 🌐 **URL to Base64** — convert remote URLs (images, videos, gifs) to base64 strings
-- 📤 **Share Files** — share files with other apps using native share dialog
-- 📂 **Open Files** — open files with default apps or app chooser
-- 📱 **Expo Support** — includes a config plugin for zero-config integration
-- ⚡ **TurboModules** — built on the React Native New Architecture
-- 📦 **File management** — list, delete individual files, or clear all downloads
+-  **Download with progress** — clean `0 → 100` progress natively, no UI freezing
+-  **Background downloads** — survive app suspension (iOS background URLSession + Android DownloadManager)
+-  **Pause & Resume** — resume mid-download using HTTP Range requests
+-  **Cancel** — cancel any active download, partial files are cleaned up automatically
+-  **Re-attach** — reconnect to background downloads after app restart
+-  **Custom Headers** — support for Authorization tokens and custom metadata
+-  **Custom Destinations** — save to `downloads`, `cache`, or `documents` folders
+-  **Multipart Upload** — simple, native file uploading
+-  **Checksum Validation** — verify file integrity (MD5, SHA1, SHA256) after download
+-  **Base64 & Data URI Support** — convert base64 strings and data URIs to files natively
+-  **URL to Base64** — convert remote URLs (images, videos, gifs) to base64 strings
+-  **Share Files** — share files with other apps using native share dialog
+-  **Open Files** — open files with default apps or app chooser
+-  **Expo Support** — includes a config plugin for zero-config integration
+-  **TurboModules** — built on the React Native New Architecture
+-  **File management** — list, delete individual files, or clear all downloads
 
 ---
 
