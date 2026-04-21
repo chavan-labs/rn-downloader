@@ -136,13 +136,13 @@ await clearCache();
 
 ---
 
-## � Articles & Resources
+## ✏️ Articles & Resources
 
 - [**Why Downloading Files in React Native is Still Broken in 2026 (and How to Fix It)**](https://medium.com/@chavanrohit413/why-downloading-files-in-react-native-is-still-broken-in-2026-and-how-to-fix-it-16ca47a6bd8b) — Deep dive into the problems with existing solutions and how rn-downloader solves them
 
 ---
 
-## �🔗 Links
+## 🔗 Links
 
 - [GitHub](https://github.com/chavanRk/react-native-downloader)
 - [npm](https://www.npmjs.com/package/rn-downloader)
