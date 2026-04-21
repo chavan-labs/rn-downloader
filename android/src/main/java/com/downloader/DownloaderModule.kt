@@ -2,8 +2,10 @@ package com.downloader
 
 import android.app.DownloadManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import androidx.core.content.FileProvider
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.Promise
@@ -19,6 +21,7 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
+import android.webkit.MimeTypeMap
 
 // ─── Per-download state ───────────────────────────────────────────────────────
 
@@ -514,6 +517,221 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
           putString("error", e.message ?: "UPLOAD_ERROR")
         })
       }
+    }
+  }
+
+  // ─── saveBase64AsFile ──────────────────────────────────────────────────────
+
+  override fun saveBase64AsFile(options: ReadableMap, promise: Promise) {
+    try {
+      val base64String = options.getString("base64Data")
+      if (base64String.isNullOrBlank()) {
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", false)
+          putString("error", "base64Data is required")
+        })
+        return
+      }
+
+      val rawFileName = if (options.hasKey("fileName")) options.getString("fileName") else null
+      val fileName = rawFileName ?: "base64_file_${System.currentTimeMillis()}"
+      val destination = options.takeIf { it.hasKey("destination") }?.getString("destination")
+
+      // Decode base64
+      val decodedBytes = try {
+        android.util.Base64.decode(base64String, android.util.Base64.DEFAULT)
+      } catch (e: IllegalArgumentException) {
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", false)
+          putString("error", "Invalid base64 string: ${e.message}")
+        })
+        return
+      }
+
+      val destFile = getDestinationFile(fileName, destination)
+      
+      // Write to file
+      FileOutputStream(destFile).use { fos ->
+        fos.write(decodedBytes)
+      }
+
+      promise.resolve(Arguments.createMap().apply {
+        putBoolean("success", true)
+        putString("filePath", destFile.absolutePath)
+      })
+
+    } catch (e: Exception) {
+      promise.resolve(Arguments.createMap().apply {
+        putBoolean("success", false)
+        putString("error", e.message ?: "BASE64_SAVE_ERROR")
+      })
+    }
+  }
+
+  // ─── urlToBase64 ───────────────────────────────────────────────────────────
+
+  override fun urlToBase64(options: ReadableMap, promise: Promise) {
+    thread {
+      try {
+        val urlString = options.getString("url")
+        if (urlString.isNullOrBlank()) {
+          promise.resolve(Arguments.createMap().apply {
+            putBoolean("success", false)
+            putString("error", "URL is required")
+          })
+          return@thread
+        }
+
+        val headersMap = options.getMap("headers")
+        val url = URL(urlString)
+        val connection = url.openConnection() as HttpURLConnection
+        
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 30000
+        connection.readTimeout = 30000
+
+        // Add custom headers if provided
+        headersMap?.toHashMap()?.forEach { (key, value) ->
+          connection.setRequestProperty(key, value.toString())
+        }
+
+        connection.connect()
+
+        if (connection.responseCode !in 200..299) {
+          promise.resolve(Arguments.createMap().apply {
+            putBoolean("success", false)
+            putString("error", "HTTP ${connection.responseCode}")
+          })
+          return@thread
+        }
+
+        // Get MIME type from response
+        val mimeType = connection.contentType?.split(";")?.get(0)?.trim() ?: "application/octet-stream"
+
+        // Read all bytes
+        val bytes = connection.inputStream.use { it.readBytes() }
+        
+        // Encode to base64
+        val base64String = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", true)
+          putString("base64", base64String)
+          putString("mimeType", mimeType)
+          putString("dataUri", "data:$mimeType;base64,$base64String")
+        })
+
+      } catch (e: Exception) {
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", false)
+          putString("error", e.message ?: "URL_TO_BASE64_ERROR")
+        })
+      }
+    }
+  }
+
+  // ─── shareFile ─────────────────────────────────────────────────────────────
+
+  override fun shareFile(filePath: String, options: ReadableMap, promise: Promise) {
+    try {
+      val file = File(filePath)
+      if (!file.exists()) {
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", false)
+          putString("error", "File not found: $filePath")
+        })
+        return
+      }
+
+      val authority = "${reactContext.packageName}.fileprovider"
+      val contentUri = FileProvider.getUriForFile(reactContext, authority, file)
+
+      val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = getMimeType(filePath)
+        putExtra(Intent.EXTRA_STREAM, contentUri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        
+        // Optional title and subject from options
+        if (options.hasKey("title")) {
+          putExtra(Intent.EXTRA_TITLE, options.getString("title"))
+        }
+        if (options.hasKey("subject")) {
+          putExtra(Intent.EXTRA_SUBJECT, options.getString("subject"))
+        }
+      }
+
+      val chooserIntent = Intent.createChooser(shareIntent, "Share File")
+      chooserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      
+      reactContext.startActivity(chooserIntent)
+
+      promise.resolve(Arguments.createMap().apply {
+        putBoolean("success", true)
+      })
+
+    } catch (e: Exception) {
+      promise.resolve(Arguments.createMap().apply {
+        putBoolean("success", false)
+        putString("error", e.message ?: "SHARE_ERROR")
+      })
+    }
+  }
+
+  // ─── openFile ──────────────────────────────────────────────────────────────
+
+  override fun openFile(filePath: String, mimeType: String, promise: Promise) {
+    try {
+      val file = File(filePath)
+      if (!file.exists()) {
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", false)
+          putString("error", "File not found: $filePath")
+        })
+        return
+      }
+
+      val authority = "${reactContext.packageName}.fileprovider"
+      val contentUri = FileProvider.getUriForFile(reactContext, authority, file)
+
+      val detectedMimeType = if (mimeType.isNotBlank()) mimeType else getMimeType(filePath)
+
+      val openIntent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(contentUri, detectedMimeType)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+
+      // Check if there's an app to handle this file type
+      val packageManager = reactContext.packageManager
+      if (openIntent.resolveActivity(packageManager) != null) {
+        reactContext.startActivity(openIntent)
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", true)
+        })
+      } else {
+        promise.resolve(Arguments.createMap().apply {
+          putBoolean("success", false)
+          putString("error", "No app found to open this file type: $detectedMimeType")
+        })
+      }
+
+    } catch (e: Exception) {
+      promise.resolve(Arguments.createMap().apply {
+        putBoolean("success", false)
+        putString("error", e.message ?: "OPEN_FILE_ERROR")
+      })
+    }
+  }
+
+  // ─── Helper: Get MIME type ─────────────────────────────────────────────────
+
+  private fun getMimeType(filePath: String): String {
+    val extension = filePath.substringAfterLast('.', "")
+    return if (extension.isNotBlank()) {
+      MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.lowercase()) ?: "application/octet-stream"
+    } else {
+      "application/octet-stream"
     }
   }
 

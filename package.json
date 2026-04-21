@@ -1,6 +1,6 @@
 {
   "name": "rn-downloader",
-  "version": "2.0.8",
+  "version": "2.0.9",
   "description": "The simplest and most reliable way to download files in React Native with progress, permissions, and file handling built-in.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -33,7 +33,7 @@
     "!**/.*"
   ],
   "scripts": {
-    "example": "yarn workspace react-native-downloader-example",
+    "example": "yarn workspace rn-downloader-example",
     "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
     "prepare": "bob build",
     "typecheck": "tsc",
@@ -64,18 +64,29 @@
     "download-progress",
     "react-native-downloads",
     "mobile-download",
-    "expo-plugin"
+    "expo-plugin",
+    "base64",
+    "base64-converter",
+    "data-uri",
+    "url-to-base64",
+    "share-file",
+    "open-file",
+    "file-sharing",
+    "file-viewer",
+    "document-viewer",
+    "share-dialog",
+    "native-share"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/chavanRk/react-native-downloader.git"
+    "url": "git+https://github.com/chavan-labs/rn-downloader.git"
   },
-  "author": "Rohit Chavan <chavanrohit413@gmail.com> (https://github.com/chavanRk)",
+  "author": "Rohit Chavan <chavanrohit413@gmail.com> (https://github.com/chavan-labs)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/chavanRk/react-native-downloader/issues"
+    "url": "https://github.com/chavan-labs/rn-downloader/issues"
   },
-  "homepage": "https://github.com/chavanRk/react-native-downloader#readme",
+  "homepage": "https://github.com/chavan-labs/rn-downloader#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },

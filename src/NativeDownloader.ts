@@ -10,6 +10,10 @@ export interface Spec extends TurboModule {
   deleteFile(filePath: string): Promise<Object>;
   clearCache(): Promise<Object>;
   getBackgroundDownloads(): Promise<Object>;
+  saveBase64AsFile(options: Object): Promise<Object>;
+  urlToBase64(options: Object): Promise<Object>;
+  shareFile(filePath: string, options: Object): Promise<Object>;
+  openFile(filePath: string, mimeType: string): Promise<Object>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('Downloader');

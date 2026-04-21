@@ -1,9 +1,10 @@
 #import <Foundation/Foundation.h>
 #import <React/RCTLog.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <UIKit/UIKit.h>
 
 // ─── Foreground session delegate ──────────────────────────────────────────────
-@interface Downloader () <NSURLSessionDownloadDelegate>
+@interface Downloader () <NSURLSessionDownloadDelegate, UIDocumentInteractionControllerDelegate>
 @property (nonatomic, strong) NSURLSession *fgSession;       // foreground
 @property (nonatomic, strong) NSURLSession *bgSession;       // background
 // downloadId → resolve/reject blocks
@@ -493,6 +494,225 @@ didCompleteWithError:(NSError *)error {
     // Note: URLSessionUploadTask doesn't have a simple progress delegate for fromData: uploads without using a delegate-based session.
     // For simplicity in this step, we'll skip progress for now or refactor to delegate later if needed.
     [task resume];
+}
+
+// ─── saveBase64AsFile ─────────────────────────────────────────────────────────
+
+RCT_REMAP_METHOD(saveBase64AsFile,
+                 base64Options:(NSDictionary *)options
+                 saveResolver:(RCTPromiseResolveBlock)resolve
+                 saveRejecter:(RCTPromiseRejectBlock)reject)
+{
+    NSString *base64String = options[@"base64Data"];
+    if (!base64String || base64String.length == 0) {
+        resolve(@{@"success": @NO, @"error": @"base64Data is required"});
+        return;
+    }
+    
+    NSString *fileName = options[@"fileName"];
+    if (!fileName || fileName.length == 0) {
+        fileName = [NSString stringWithFormat:@"base64_file_%lld", (long long)([[NSDate date] timeIntervalSince1970] * 1000)];
+    }
+    
+    NSString *destination = options[@"destination"] ?: @"downloads";
+    
+    // Decode base64
+    NSData *decodedData = [[NSData alloc] initWithBase64EncodedString:base64String options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    if (!decodedData) {
+        resolve(@{@"success": @NO, @"error": @"Invalid base64 string"});
+        return;
+    }
+    
+    NSURL *destURL = [self destURLForFileName:fileName destination:destination];
+    NSError *writeError = nil;
+    BOOL success = [decodedData writeToURL:destURL options:NSDataWritingAtomic error:&writeError];
+    
+    if (!success || writeError) {
+        resolve(@{@"success": @NO, @"error": writeError ? writeError.localizedDescription : @"Failed to write file"});
+        return;
+    }
+    
+    resolve(@{
+        @"success": @YES,
+        @"filePath": destURL.path
+    });
+}
+
+// ─── urlToBase64 ──────────────────────────────────────────────────────────────
+
+RCT_REMAP_METHOD(urlToBase64,
+                 urlOptions:(NSDictionary *)options
+                 urlResolver:(RCTPromiseResolveBlock)resolve
+                 urlRejecter:(RCTPromiseRejectBlock)reject)
+{
+    NSString *urlString = options[@"url"];
+    if (!urlString || urlString.length == 0) {
+        resolve(@{@"success": @NO, @"error": @"URL is required"});
+        return;
+    }
+    
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) {
+        resolve(@{@"success": @NO, @"error": @"Invalid URL"});
+        return;
+    }
+    
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.timeoutInterval = 30.0;
+    
+    // Add custom headers if provided
+    NSDictionary *headers = options[@"headers"];
+    if (headers) {
+        for (NSString *key in headers) {
+            [request setValue:headers[key] forHTTPHeaderField:key];
+        }
+    }
+    
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            resolve(@{@"success": @NO, @"error": error.localizedDescription});
+            return;
+        }
+        
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        if (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
+            resolve(@{@"success": @NO, @"error": [NSString stringWithFormat:@"HTTP %ld", (long)httpResponse.statusCode]});
+            return;
+        }
+        
+        if (!data || data.length == 0) {
+            resolve(@{@"success": @NO, @"error": @"No data received"});
+            return;
+        }
+        
+        // Get MIME type from response
+        NSString *mimeType = httpResponse.MIMEType ?: @"application/octet-stream";
+        
+        // Encode to base64
+        NSString *base64String = [data base64EncodedStringWithOptions:0];
+        NSString *dataUri = [NSString stringWithFormat:@"data:%@;base64,%@", mimeType, base64String];
+        
+        resolve(@{
+            @"success": @YES,
+            @"base64": base64String,
+            @"mimeType": mimeType,
+            @"dataUri": dataUri
+        });
+    }];
+    
+    [task resume];
+}
+
+// ─── shareFile ────────────────────────────────────────────────────────────────
+
+RCT_REMAP_METHOD(shareFile,
+                 shareFilePath:(NSString *)filePath
+                 shareOptions:(NSDictionary *)options
+                 shareResolver:(RCTPromiseResolveBlock)resolve
+                 shareRejecter:(RCTPromiseRejectBlock)reject)
+{
+    if (!filePath || filePath.length == 0) {
+        resolve(@{@"success": @NO, @"error": @"File path is required"});
+        return;
+    }
+    
+    if (![[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
+        resolve(@{@"success": @NO, @"error": [NSString stringWithFormat:@"File not found: %@", filePath]});
+        return;
+    }
+    
+    NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *rootViewController = [UIApplication sharedApplication].delegate.window.rootViewController;
+        
+        // Find the topmost view controller
+        while (rootViewController.presentedViewController) {
+            rootViewController = rootViewController.presentedViewController;
+        }
+        
+        NSArray *itemsToShare = @[fileURL];
+        UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:itemsToShare applicationActivities:nil];
+        
+        // For iPad, set the popover presentation controller
+        if (activityVC.popoverPresentationController) {
+            activityVC.popoverPresentationController.sourceView = rootViewController.view;
+            activityVC.popoverPresentationController.sourceRect = CGRectMake(rootViewController.view.bounds.size.width / 2,
+                                                                              rootViewController.view.bounds.size.height / 2,
+                                                                              0, 0);
+            activityVC.popoverPresentationController.permittedArrowDirections = 0;
+        }
+        
+        activityVC.completionWithItemsHandler = ^(UIActivityType activityType, BOOL completed, NSArray *returnedItems, NSError *activityError) {
+            if (activityError) {
+                resolve(@{@"success": @NO, @"error": activityError.localizedDescription});
+            } else {
+                resolve(@{@"success": @YES, @"completed": @(completed)});
+            }
+        };
+        
+        [rootViewController presentViewController:activityVC animated:YES completion:nil];
+    });
+}
+
+// ─── openFile ─────────────────────────────────────────────────────────────────
+
+RCT_REMAP_METHOD(openFile,
+                 openFilePath:(NSString *)filePath
+                 mimeType:(NSString *)mimeType
+                 openResolver:(RCTPromiseResolveBlock)resolve
+                 openRejecter:(RCTPromiseRejectBlock)reject)
+{
+    if (!filePath || filePath.length == 0) {
+        resolve(@{@"success": @NO, @"error": @"File path is required"});
+        return;
+    }
+    
+    if (![[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
+        resolve(@{@"success": @NO, @"error": [NSString stringWithFormat:@"File not found: %@", filePath]});
+        return;
+    }
+    
+    NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *rootViewController = [UIApplication sharedApplication].delegate.window.rootViewController;
+        
+        // Find the topmost view controller
+        while (rootViewController.presentedViewController) {
+            rootViewController = rootViewController.presentedViewController;
+        }
+        
+        // Use UIDocumentInteractionController for opening files
+        UIDocumentInteractionController *documentController = [UIDocumentInteractionController interactionControllerWithURL:fileURL];
+        documentController.delegate = (id<UIDocumentInteractionControllerDelegate>)self;
+        
+        BOOL canOpen = [documentController presentPreviewAnimated:YES];
+        
+        if (!canOpen) {
+            // Fallback: Try to open with options menu
+            canOpen = [documentController presentOptionsMenuFromRect:CGRectMake(rootViewController.view.bounds.size.width / 2,
+                                                                                 rootViewController.view.bounds.size.height / 2,
+                                                                                 0, 0)
+                                                              inView:rootViewController.view
+                                                            animated:YES];
+        }
+        
+        if (canOpen) {
+            resolve(@{@"success": @YES});
+        } else {
+            resolve(@{@"success": @NO, @"error": @"No app found to open this file"});
+        }
+    });
+}
+
+// UIDocumentInteractionControllerDelegate method
+- (UIViewController *)documentInteractionControllerViewControllerForPreview:(UIDocumentInteractionController *)controller {
+    UIViewController *rootViewController = [UIApplication sharedApplication].delegate.window.rootViewController;
+    while (rootViewController.presentedViewController) {
+        rootViewController = rootViewController.presentedViewController;
+    }
+    return rootViewController;
 }
 
 @end

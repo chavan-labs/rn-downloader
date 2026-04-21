@@ -96,6 +96,80 @@ export interface CacheResult {
   error?: string;
 }
 
+export interface SaveBase64Options {
+  /**
+   * Base64 string or data URI (e.g., "data:image/png;base64,iVBORw0...")
+   * If a data URI is provided, the base64 portion will be extracted automatically.
+   */
+  base64Data: string;
+  /** Optional file name. Auto-generated if not provided */
+  fileName?: string;
+  /**
+   * Destination directory for the saved file.
+   * - 'downloads': Public Downloads folder (default)
+   * - 'cache': App-private cache directory
+   * - 'documents': App-private documents directory
+   */
+  destination?: 'downloads' | 'cache' | 'documents';
+}
+
+export interface SaveBase64Result {
+  success: boolean;
+  /** Local path of the saved file */
+  filePath?: string;
+  /** Error message if success is false */
+  error?: string;
+}
+
+export interface UrlToBase64Options {
+  /** URL of the file to convert to base64 (image, video, gif, etc.) */
+  url: string;
+  /** Optional custom headers (e.g., Authorization) */
+  headers?: Record<string, string>;
+}
+
+export interface UrlToBase64Result {
+  success: boolean;
+  /** Base64-encoded string */
+  base64?: string;
+  /** MIME type detected from response (e.g., 'image/png') */
+  mimeType?: string;
+  /** Complete data URI (e.g., 'data:image/png;base64,...') */
+  dataUri?: string;
+  /** Error message if success is false */
+  error?: string;
+}
+
+export interface ShareFileOptions {
+  /** Absolute path to the file to share */
+  filePath: string;
+  /** Optional title for the share dialog (Android only) */
+  title?: string;
+  /** Optional subject for email sharing (Android only) */
+  subject?: string;
+}
+
+export interface OpenFileOptions {
+  /** Absolute path to the file to open */
+  filePath: string;
+  /** MIME type of the file (e.g., 'application/pdf', 'image/jpeg'). Auto-detected if not provided. */
+  mimeType?: string;
+}
+
+export interface ShareFileResult {
+  success: boolean;
+  /** Whether user completed the share action (iOS only) */
+  completed?: boolean;
+  /** Error message if success is false */
+  error?: string;
+}
+
+export interface OpenFileResult {
+  success: boolean;
+  /** Error message if success is false */
+  error?: string;
+}
+
 // ─── Core download ────────────────────────────────────────────────────────────
 
 /**
@@ -330,4 +404,177 @@ export function onUploadProgress(
   return () => sub.remove();
 }
 
-export default { download, upload };
+// ─── saveBase64AsFile ─────────────────────────────────────────────────────────
+
+/**
+ * Save a base64 string or data URI as a file.
+ * Supports data URIs (e.g., "data:image/png;base64,iVBORw0...") and plain base64 strings.
+ *
+ * @example
+ * ```typescript
+ * // From data URI
+ * const result = await saveBase64AsFile({
+ *   base64Data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg...',
+ *   fileName: 'photo.png',
+ *   destination: 'documents'
+ * });
+ *
+ * // From plain base64
+ * const result = await saveBase64AsFile({
+ *   base64Data: 'SGVsbG8gV29ybGQ=',
+ *   fileName: 'hello.txt',
+ *   destination: 'cache'
+ * });
+ * ```
+ */
+export async function saveBase64AsFile(
+  options: SaveBase64Options
+): Promise<SaveBase64Result> {
+  try {
+    let { base64Data, fileName, destination } = options;
+
+    // Parse data URI if present (e.g., "data:image/png;base64,iVBORw0...")
+    if (base64Data.startsWith('data:')) {
+      const matches = base64Data.match(/^data:([^;]+);base64,(.+)$/);
+      if (matches && matches[2]) {
+        base64Data = matches[2];
+
+        // Auto-detect file extension from MIME type if fileName not provided
+        if (!fileName && matches[1]) {
+          const mimeType = matches[1];
+          const ext = mimeType.split('/')[1] || 'bin';
+          fileName = `file_${Date.now()}.${ext}`;
+        }
+      } else {
+        return {
+          success: false,
+          error:
+            'Invalid data URI format. Expected: data:<mimetype>;base64,<data>',
+        };
+      }
+    }
+
+    const result = await DownloaderModule.saveBase64AsFile({
+      base64Data,
+      fileName,
+      destination,
+    });
+
+    return result as SaveBase64Result;
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'UNKNOWN_ERROR' };
+  }
+}
+
+// ─── urlToBase64 ──────────────────────────────────────────────────────────────
+
+/**
+ * Convert a web URL (image, video, gif, etc.) to base64 string.
+ * Downloads the file and returns both the base64 string and data URI format.
+ *
+ * @example
+ * ```typescript
+ * // Convert image to base64
+ * const result = await urlToBase64({
+ *   url: 'https://example.com/photo.jpg',
+ *   headers: { Authorization: 'Bearer token' }
+ * });
+ *
+ * if (result.success) {
+ *   console.log('Base64:', result.base64);
+ *   console.log('Data URI:', result.dataUri);
+ *   console.log('MIME Type:', result.mimeType);
+ * }
+ * ```
+ */
+export async function urlToBase64(
+  options: UrlToBase64Options
+): Promise<UrlToBase64Result> {
+  try {
+    const result = await DownloaderModule.urlToBase64({
+      url: options.url,
+      headers: options.headers,
+    });
+
+    return result as UrlToBase64Result;
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'UNKNOWN_ERROR' };
+  }
+}
+
+// ─── shareFile ────────────────────────────────────────────────────────────────
+
+/**
+ * Share a file with other apps using the native share dialog.
+ * Opens the system share sheet on iOS and share chooser on Android.
+ *
+ * @example
+ * ```typescript
+ * const result = await shareFile({
+ *   filePath: '/path/to/document.pdf',
+ *   title: 'Share Document',
+ *   subject: 'Check out this file'
+ * });
+ *
+ * if (result.success) {
+ *   console.log('File shared successfully');
+ * }
+ * ```
+ */
+export async function shareFile(
+  options: ShareFileOptions
+): Promise<ShareFileResult> {
+  try {
+    const result = await DownloaderModule.shareFile(options.filePath, {
+      title: options.title,
+      subject: options.subject,
+    });
+
+    return result as ShareFileResult;
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'UNKNOWN_ERROR' };
+  }
+}
+
+// ─── openFile ─────────────────────────────────────────────────────────────────
+
+/**
+ * Open a file with the default app or app chooser.
+ * On iOS, displays a preview or shows apps that can handle the file.
+ * On Android, opens with the default app or shows app chooser.
+ *
+ * @example
+ * ```typescript
+ * const result = await openFile({
+ *   filePath: '/path/to/document.pdf',
+ *   mimeType: 'application/pdf' // optional, auto-detected if not provided
+ * });
+ *
+ * if (result.success) {
+ *   console.log('File opened successfully');
+ * }
+ * ```
+ */
+export async function openFile(
+  options: OpenFileOptions
+): Promise<OpenFileResult> {
+  try {
+    const result = await DownloaderModule.openFile(
+      options.filePath,
+      options.mimeType || ''
+    );
+
+    return result as OpenFileResult;
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'UNKNOWN_ERROR' };
+  }
+}
+
+export default {
+  download,
+  upload,
+  saveBase64AsFile,
+  urlToBase64,
+  shareFile,
+  openFile,
+};
