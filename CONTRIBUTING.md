@@ -1,8 +1,24 @@
 # Contributing
 
-Contributions are always welcome, no matter how large or small!
+👋 **Thank you for considering contributing to rn-downloader!**
+
+Contributions are always welcome, no matter how large or small! Whether you're fixing a typo, adding a feature, or improving documentation — every contribution helps make this library better for the community.
 
 We want this community to be friendly and respectful to each other. Please follow it in all your interactions with the project. Before contributing, please read the [code of conduct](./CODE_OF_CONDUCT.md).
+
+## 🎯 Ways to Contribute
+
+There are many ways you can contribute to this project:
+
+- 🐛 **Report bugs** — found an issue? Let us know!
+- 💡 **Suggest features** — have an idea? Open a discussion
+- 📝 **Improve documentation** — help others understand the library better
+- 🔧 **Fix issues** — check out the [open issues](https://github.com/chavanRk/react-native-downloader/issues)
+- ✨ **Add features** — implement something new and useful
+- 🧪 **Write tests** — help improve code coverage
+- 💬 **Help others** — answer questions in issues or discussions
+
+Don't know where to start? Look for issues labeled `good first issue` or `help wanted`.
 
 ## Development workflow
 
@@ -81,7 +97,6 @@ Remember to add tests for your change if possible. Run the unit tests by:
 yarn test
 ```
 
-
 ### Commit message convention
 
 We follow the [conventional commits specification](https://www.conventionalcommits.org/en) for our commit messages:
@@ -95,7 +110,6 @@ We follow the [conventional commits specification](https://www.conventionalcommi
 
 Our pre-commit hooks verify that your commit message matches this format when committing.
 
-
 ### Publishing to npm
 
 We use [release-it](https://github.com/release-it/release-it) to make it easier to publish new versions. It handles common tasks like bumping version based on semver, creating tags and releases etc.
@@ -105,7 +119,6 @@ To publish new versions, run the following:
 ```sh
 yarn release
 ```
-
 
 ### Scripts
 

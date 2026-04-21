@@ -1,6 +1,6 @@
 {
   "name": "rn-downloader",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "The simplest and most reliable way to download files in React Native with progress, permissions, and file handling built-in.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -49,10 +49,22 @@
     "download",
     "downloader",
     "file-download",
+    "background-download",
+    "download-manager",
+    "file-upload",
+    "upload",
     "progress",
+    "pause-resume",
     "turbo-module",
     "native-module",
-    "file-manager"
+    "file-manager",
+    "cache",
+    "checksum",
+    "urlsession",
+    "download-progress",
+    "react-native-downloads",
+    "mobile-download",
+    "expo-plugin"
   ],
   "repository": {
     "type": "git",
