@@ -27,22 +27,23 @@ Most React Native file download solutions have one or more of these problems:
 
 ## ✨ Features
 
--  **Download with progress** — clean `0 → 100` progress natively, no UI freezing
--  **Background downloads** — survive app suspension (iOS background URLSession + Android DownloadManager)
--  **Pause & Resume** — resume mid-download using HTTP Range requests
--  **Cancel** — cancel any active download, partial files are cleaned up automatically
--  **Re-attach** — reconnect to background downloads after app restart
--  **Custom Headers** — support for Authorization tokens and custom metadata
--  **Custom Destinations** — save to `downloads`, `cache`, or `documents` folders
--  **Multipart Upload** — simple, native file uploading
--  **Checksum Validation** — verify file integrity (MD5, SHA1, SHA256) after download
--  **Base64 & Data URI Support** — convert base64 strings and data URIs to files natively
--  **URL to Base64** — convert remote URLs (images, videos, gifs) to base64 strings
--  **Share Files** — share files with other apps using native share dialog
--  **Open Files** — open files with default apps or app chooser
--  **Expo Support** — includes a config plugin for zero-config integration
--  **TurboModules** — built on the React Native New Architecture
--  **File management** — list, delete individual files, or clear all downloads
+- **Download with progress** — clean `0 → 100` progress natively, no UI freezing
+- **Background downloads** — survive app suspension (iOS background URLSession + Android DownloadManager)
+- **Pause & Resume** — resume mid-download using HTTP Range requests
+- **Auto-Retry** — automatic retry on network errors with exponential backoff
+- **Cancel** — cancel any active download, partial files are cleaned up automatically
+- **Re-attach** — reconnect to background downloads after app restart
+- **Custom Headers** — support for Authorization tokens and custom metadata
+- **Custom Destinations** — save to `downloads`, `cache`, or `documents` folders
+- **Multipart Upload** — simple, native file uploading
+- **Checksum Validation** — verify file integrity (MD5, SHA1, SHA256) after download
+- **Base64 & Data URI Support** — convert base64 strings and data URIs to files natively
+- **URL to Base64** — convert remote URLs (images, videos, gifs) to base64 strings
+- **Share Files** — share files with other apps using native share dialog
+- **Open Files** — open files with default apps or app chooser
+- **Expo Support** — includes a config plugin for zero-config integration
+- **TurboModules** — built on the React Native New Architecture
+- **File management** — list, delete individual files, or clear all downloads
 
 ---
 
@@ -71,8 +72,21 @@ const result = await download({
     algorithm: 'md5',
   },
   onProgress: (p) => console.log(`${p}%`),
+  // Auto-retry on network failure (optional)
+  retry: {
+    attempts: 3, // max retry attempts
+    delay: 1000, // base delay in ms; doubles each attempt: 1s → 2s → 4s (capped at 30s)
+    onRetry: (attempt, error) => console.log(`Retry #${attempt}: ${error}`),
+  },
 });
 ```
+
+> **Retry behaviour:**
+>
+> - Only retries on **network errors** (timeouts, connection drops, socket errors).
+> - Server errors (`4xx`/`5xx`) and checksum mismatches are **not** retried.
+> - Delay doubles each attempt (exponential backoff), capped at 30 seconds.
+> - Works on both iOS and Android for foreground downloads.
 
 ---
 
@@ -247,21 +261,22 @@ Convert base64-encoded data (like images from canvas, camera, or API responses) 
 
 ## 📐 Type Reference
 
-| Type                 | Fields                                                                                                          |
-| -------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `DownloadOptions`    | `url`, `fileName?`, `background?`, `headers?`, `destination?`, `notificationTitle?`, `checksum?`, `onProgress?` |
-| `UploadOptions`      | `url`, `filePath`, `fieldName?`, `headers?`, `parameters?`, `onProgress?`                                       |
-| `SaveBase64Options`  | `base64Data`, `fileName?`, `destination?`                                                                       |
-| `UrlToBase64Options` | `url`, `headers?`                                                                                               |
-| `ShareFileOptions`   | `filePath`, `title?`, `subject?`                                                                                |
-| `OpenFileOptions`    | `filePath`, `mimeType?`                                                                                         |
-| `DownloadResult`     | `success`, `filePath?`, `downloadId?`, `error?`                                                                 |
-| `UploadResult`       | `success`, `status?`, `data?`, `error?`                                                                         |
-| `SaveBase64Result`   | `success`, `filePath?`, `error?`                                                                                |
-| `UrlToBase64Result`  | `success`, `base64?`, `mimeType?`, `dataUri?`, `error?`                                                         |
-| `ShareFileResult`    | `success`, `completed?`, `error?`                                                                               |
-| `OpenFileResult`     | `success`, `error?`                                                                                             |
-| `Checksum`           | `hash`, `algorithm: 'md5' \| 'sha1' \| 'sha256'`                                                                |
+| Type                 | Fields                                                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `DownloadOptions`    | `url`, `fileName?`, `background?`, `headers?`, `destination?`, `notificationTitle?`, `checksum?`, `onProgress?`, `retry?` |
+| `RetryOptions`       | `attempts`, `delay?`, `onRetry?`                                                                                          |
+| `UploadOptions`      | `url`, `filePath`, `fieldName?`, `headers?`, `parameters?`, `onProgress?`                                                 |
+| `SaveBase64Options`  | `base64Data`, `fileName?`, `destination?`                                                                                 |
+| `UrlToBase64Options` | `url`, `headers?`                                                                                                         |
+| `ShareFileOptions`   | `filePath`, `title?`, `subject?`                                                                                          |
+| `OpenFileOptions`    | `filePath`, `mimeType?`                                                                                                   |
+| `DownloadResult`     | `success`, `filePath?`, `downloadId?`, `error?`                                                                           |
+| `UploadResult`       | `success`, `status?`, `data?`, `error?`                                                                                   |
+| `SaveBase64Result`   | `success`, `filePath?`, `error?`                                                                                          |
+| `UrlToBase64Result`  | `success`, `base64?`, `mimeType?`, `dataUri?`, `error?`                                                                   |
+| `ShareFileResult`    | `success`, `completed?`, `error?`                                                                                         |
+| `OpenFileResult`     | `success`, `error?`                                                                                                       |
+| `Checksum`           | `hash`, `algorithm: 'md5' \| 'sha1' \| 'sha256'`                                                                          |
 
 ---
 

@@ -42,6 +42,8 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
   private val activeDownloads = ConcurrentHashMap<String, DownloadState>()
   // downloadId → background DownloadManager ID
   private val bgDownloadIds = ConcurrentHashMap<String, Long>()
+  // Stored promises for foreground downloads — resolved on completion (not early)
+  private val foregroundPromises = ConcurrentHashMap<String, Promise>()
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -61,7 +63,12 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
   private fun getDestinationFile(fileName: String, destination: String?): File {
     return when (destination) {
       "cache" -> File(reactContext.cacheDir, fileName)
-      "documents" -> File(reactContext.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), fileName)
+      "documents" -> {
+        // getExternalFilesDir can return null if external storage is unavailable
+        val dir = reactContext.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+          ?: reactContext.filesDir
+        File(dir, fileName)
+      }
       else -> File(
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
         fileName
@@ -70,14 +77,22 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
   }
 
   private fun calculateChecksum(file: File, algorithm: String): String {
-    val digest = MessageDigest.getInstance(algorithm)
-    val fis = FileInputStream(file)
-    val buffer = ByteArray(8192)
-    var count: Int
-    while (fis.read(buffer).also { count = it } != -1) {
-      digest.update(buffer, 0, count)
+    val javaAlgo = when (algorithm.uppercase()) {
+      "SHA1" -> "SHA-1"
+      "SHA256" -> "SHA-256"
+      else -> algorithm
     }
-    fis.close()
+    val digest = MessageDigest.getInstance(javaAlgo)
+    val fis = FileInputStream(file)
+    try {
+      val buffer = ByteArray(8192)
+      var count: Int
+      while (fis.read(buffer).also { count = it } != -1) {
+        digest.update(buffer, 0, count)
+      }
+    } finally {
+      fis.close()
+    }
     val bytes = digest.digest()
     return bytes.joinToString("") { "%02x".format(it) }
   }
@@ -103,6 +118,11 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
     val notificationTitle = options.takeIf { it.hasKey("notificationTitle") }?.getString("notificationTitle")
     val notificationDesc = options.takeIf { it.hasKey("notificationDescription") }?.getString("notificationDescription")
     val checksumMap = options.takeIf { it.hasKey("checksum") }?.getMap("checksum")
+
+    // ─── Retry config ──────────────────────────────────────────────────────
+    val retryMap = options.takeIf { it.hasKey("retry") }?.getMap("retry")
+    val maxAttempts = retryMap?.takeIf { it.hasKey("attempts") }?.getInt("attempts") ?: 0
+    val baseDelay = retryMap?.takeIf { it.hasKey("delay") }?.getInt("delay") ?: 1000
 
     val state = DownloadState(url = urlString, fileName = fileName, isBackground = isBackground)
     activeDownloads[downloadId] = state
@@ -138,124 +158,192 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
       return
     }
 
-    // Foreground download
-    promise.resolve(Arguments.createMap().apply {
-      putBoolean("success", true)
-      putString("downloadId", downloadId)
-    })
+    // Foreground: store promise — resolve on completion (matches iOS behaviour)
+    foregroundPromises[downloadId] = promise
 
     thread {
-      try {
-        var resumeFrom = state.bytesDownloaded
-        val destFile = getDestinationFile(fileName, destination)
+      var attempt = 0
+      var lastError = "NETWORK_ERROR"
 
-        val url = URL(urlString)
-        val connection = url.openConnection() as HttpURLConnection
-
-        // Add custom headers
-        headersMap?.toHashMap()?.forEach { (key, value) ->
-          if (value is String) connection.setRequestProperty(key, value)
-        }
-
-        if (resumeFrom > 0) {
-          connection.setRequestProperty("Range", "bytes=$resumeFrom-")
-        }
-        connection.connect()
-
-        val responseCode = connection.responseCode
-        if (responseCode != HttpURLConnection.HTTP_OK && responseCode != HttpURLConnection.HTTP_PARTIAL) {
-          activeDownloads.remove(downloadId)
-          val err = Arguments.createMap().apply {
-            putBoolean("success", false)
+      retryLoop@ while (true) {
+        // ── Before retry: emit event + wait with exponential backoff ───────
+        if (attempt > 0) {
+          state.bytesDownloaded = 0L          // fresh download on retry
+          val delayMs = (baseDelay.toLong() * (1L shl (attempt - 1))).coerceAtMost(30_000L)
+          // Bug #5 fix: emit retry event BEFORE the delay so JS callback fires immediately
+          val retryEvt = Arguments.createMap().apply {
             putString("downloadId", downloadId)
-            putString("error", "SERVER_ERROR: $responseCode")
+            putString("url", urlString)
+            putInt("attempt", attempt)
+            putString("error", lastError)
           }
-          emit("onDownloadError", err)
-          return@thread
+          emit("onDownloadRetry", retryEvt)
+          Thread.sleep(delayMs)
         }
 
-        val contentLength = connection.contentLength
-        val totalExpected = if (resumeFrom > 0) resumeFrom + contentLength else contentLength.toLong()
+        try {
+          val resumeFrom = state.bytesDownloaded
+          val destFile = getDestinationFile(fileName, destination)
 
-        val input = connection.inputStream
-        val output: FileOutputStream = if (resumeFrom > 0) {
-          FileOutputStream(destFile, true) // append
-        } else {
-          FileOutputStream(destFile, false)
-        }
+          val url = URL(urlString)
+          val connection = url.openConnection() as HttpURLConnection
 
-        val buffer = ByteArray(8192)
-        var total = resumeFrom
-        var count: Int
-        var lastProgress = -1
-
-        while (input.read(buffer).also { count = it } != -1) {
-          // Pause — busy-wait until resumed or cancelled
-          while (state.paused && !state.cancelled) {
-            state.bytesDownloaded = total
-            Thread.sleep(200)
+          headersMap?.toHashMap()?.forEach { (key, value) ->
+            if (value is String) connection.setRequestProperty(key, value)
           }
-          if (state.cancelled) {
-            output.close(); input.close()
-            destFile.delete()
+
+          if (resumeFrom > 0) {
+            connection.setRequestProperty("Range", "bytes=$resumeFrom-")
+          }
+          connection.connect()
+
+          val responseCode = connection.responseCode
+          if (responseCode != HttpURLConnection.HTTP_OK && responseCode != HttpURLConnection.HTTP_PARTIAL) {
+            // Server error — do NOT retry (4xx/5xx are not transient)
+            connection.disconnect()
             activeDownloads.remove(downloadId)
+            foregroundPromises.remove(downloadId)?.resolve(Arguments.createMap().apply {
+              putBoolean("success", false)
+              putString("downloadId", downloadId)
+              putString("error", "SERVER_ERROR: $responseCode")
+            })
+            emit("onDownloadError", Arguments.createMap().apply {
+              putBoolean("success", false)
+              putString("downloadId", downloadId)
+              putString("error", "SERVER_ERROR: $responseCode")
+            })
             return@thread
           }
 
-          output.write(buffer, 0, count)
-          total += count
+          val contentLength = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+          val totalExpected = if (resumeFrom > 0) resumeFrom + contentLength else contentLength
 
-          if (totalExpected > 0) {
-            val progress = (total * 100 / totalExpected).toInt()
-            if (progress > lastProgress) {
-              lastProgress = progress
-              val evt = Arguments.createMap().apply {
-                putString("url", urlString)
-                putString("downloadId", downloadId)
-                putInt("progress", progress)
+          // Bug #1 fix: always close streams via try-finally to prevent handle leaks between retries
+          val input = connection.inputStream
+          val output: FileOutputStream = if (resumeFrom > 0) {
+            FileOutputStream(destFile, true) // append
+          } else {
+            FileOutputStream(destFile, false)
+          }
+
+          val buffer = ByteArray(8192)
+          var total = resumeFrom
+          var count: Int
+          var lastProgress = -1
+
+          try {
+            while (input.read(buffer).also { count = it } != -1) {
+              while (state.paused && !state.cancelled) {
+                state.bytesDownloaded = total
+                Thread.sleep(200)
               }
-              emit("onDownloadProgress", evt)
+              if (state.cancelled) {
+                output.flush(); output.close(); input.close()
+                destFile.delete()
+                activeDownloads.remove(downloadId)
+                foregroundPromises.remove(downloadId)?.resolve(
+                  Arguments.createMap().apply {
+                    putBoolean("success", false)
+                    putString("downloadId", downloadId)
+                    putString("error", "CANCELLED")
+                  }
+                )
+                return@thread
+              }
+
+              output.write(buffer, 0, count)
+              total += count
+
+              if (totalExpected > 0) {
+                val progress = (total * 100 / totalExpected).toInt()
+                if (progress > lastProgress) {
+                  lastProgress = progress
+                  val evt = Arguments.createMap().apply {
+                    putString("url", urlString)
+                    putString("downloadId", downloadId)
+                    putInt("progress", progress)
+                  }
+                  emit("onDownloadProgress", evt)
+                }
+              }
+            }
+            output.flush()
+          } finally {
+            // Bug #1 fix: guaranteed close regardless of exception
+            try { output.close() } catch (_: Exception) {}
+            try { input.close() } catch (_: Exception) {}
+            connection.disconnect()
+          }
+
+          activeDownloads.remove(downloadId)
+
+          // ── Checksum verification ─────────────────────────────────────────
+          if (checksumMap != null) {
+            val expectedHash = checksumMap.getString("hash")
+            val algorithm = checksumMap.getString("algorithm")?.uppercase() ?: "MD5"
+            if (expectedHash != null) {
+              val actualHash = calculateChecksum(destFile, algorithm)
+              if (!actualHash.equals(expectedHash, ignoreCase = true)) {
+                destFile.delete()
+                foregroundPromises.remove(downloadId)?.resolve(Arguments.createMap().apply {
+                  putBoolean("success", false)
+                  putString("downloadId", downloadId)
+                  putString("error", "CHECKSUM_MISMATCH: expected $expectedHash, got $actualHash")
+                })
+                emit("onDownloadError", Arguments.createMap().apply {
+                  putBoolean("success", false)
+                  putString("downloadId", downloadId)
+                  putString("error", "CHECKSUM_MISMATCH: expected $expectedHash, got $actualHash")
+                })
+                return@thread
+              }
             }
           }
-        }
 
-        output.flush(); output.close(); input.close()
-        activeDownloads.remove(downloadId)
+          foregroundPromises.remove(downloadId)?.resolve(Arguments.createMap().apply {
+            putBoolean("success", true)
+            putString("downloadId", downloadId)
+            putString("filePath", destFile.absolutePath)
+          })
+          emit("onDownloadComplete", Arguments.createMap().apply {
+            putBoolean("success", true)
+            putString("downloadId", downloadId)
+            putString("filePath", destFile.absolutePath)
+          })
+          break@retryLoop // ✅ success
 
-        // Checksum verification
-        if (checksumMap != null) {
-          val expectedHash = checksumMap.getString("hash")
-          val algorithm = checksumMap.getString("algorithm")?.uppercase() ?: "MD5"
-          if (expectedHash != null) {
-            val actualHash = calculateChecksum(destFile, algorithm)
-            if (!actualHash.equals(expectedHash, ignoreCase = true)) {
-              destFile.delete()
-              val err = Arguments.createMap().apply {
+        } catch (e: Exception) {
+          lastError = e.message ?: "NETWORK_ERROR"   // Bug #3 fix: save error for next retry event
+          if (state.cancelled) {
+            activeDownloads.remove(downloadId)
+            foregroundPromises.remove(downloadId)?.resolve(
+              Arguments.createMap().apply {
                 putBoolean("success", false)
                 putString("downloadId", downloadId)
-                putString("error", "CHECKSUM_MISMATCH: expected $expectedHash, got $actualHash")
+                putString("error", "CANCELLED")
               }
-              emit("onDownloadError", err)
-              return@thread
-            }
+            )
+            return@thread
+          }
+          // Network error — retry if attempts remain
+          if (attempt < maxAttempts) {
+            attempt++
+            // loop continues → will sleep + retry
+          } else {
+            activeDownloads.remove(downloadId)
+            foregroundPromises.remove(downloadId)?.resolve(Arguments.createMap().apply {
+              putBoolean("success", false)
+              putString("downloadId", downloadId)
+              putString("error", lastError)
+            })
+            emit("onDownloadError", Arguments.createMap().apply {
+              putBoolean("success", false)
+              putString("downloadId", downloadId)
+              putString("error", lastError)
+            })
+            return@thread
           }
         }
-
-        val result = Arguments.createMap().apply {
-          putBoolean("success", true)
-          putString("downloadId", downloadId)
-          putString("filePath", destFile.absolutePath)
-        }
-        emit("onDownloadComplete", result)
-
-      } catch (e: Exception) {
-        activeDownloads.remove(downloadId)
-        val err = Arguments.createMap().apply {
-          putBoolean("success", false)
-          putString("downloadId", downloadId)
-          putString("error", e.message ?: "NETWORK_ERROR")
-        }
-        emit("onDownloadError", err)
       }
     }
   }
@@ -296,6 +384,14 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
       state.cancelled = true
       activeDownloads.remove(downloadId)
     }
+    // Resolve foreground promise if download thread hasn't yet (atomic — safe from races)
+    foregroundPromises.remove(downloadId)?.resolve(
+      Arguments.createMap().apply {
+        putBoolean("success", false)
+        putString("downloadId", downloadId)
+        putString("error", "CANCELLED")
+      }
+    )
     // Also cancel background DownloadManager downloads
     val bgId = bgDownloadIds.remove(downloadId)
     if (bgId != null) {
@@ -309,18 +405,27 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
 
   override fun getCachedFiles(promise: Promise) {
     try {
-      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-      val files = downloadsDir.listFiles() ?: emptyArray()
       val list = Arguments.createArray()
-      for (f in files) {
-        if (!f.isFile) continue
-        list.pushMap(Arguments.createMap().apply {
-          putString("fileName", f.name)
-          putString("filePath", f.absolutePath)
-          putDouble("size", f.length().toDouble())
-          putDouble("modifiedAt", f.lastModified().toDouble())
-        })
+
+      // Scan all three directories: public downloads, cache, documents
+      val dirs = listOfNotNull(
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+        reactContext.cacheDir,
+        reactContext.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: reactContext.filesDir
+      )
+
+      for (dir in dirs) {
+        dir.listFiles()?.forEach { f ->
+          if (!f.isFile) return@forEach
+          list.pushMap(Arguments.createMap().apply {
+            putString("fileName", f.name)
+            putString("filePath", f.absolutePath)
+            putDouble("size", f.length().toDouble())
+            putDouble("modifiedAt", f.lastModified().toDouble())
+          })
+        }
       }
+
       promise.resolve(Arguments.createMap().apply {
         putBoolean("success", true)
         putArray("files", list)
@@ -347,8 +452,14 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
 
   override fun clearCache(promise: Promise) {
     try {
-      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-      downloadsDir.listFiles()?.forEach { it.delete() }
+      // Only clear app-private directories — never touch public Downloads
+      val dirs = listOfNotNull(
+        reactContext.cacheDir,
+        reactContext.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: reactContext.filesDir
+      )
+      for (dir in dirs) {
+        dir.listFiles()?.forEach { it.delete() }
+      }
       promise.resolve(Arguments.createMap().apply { putBoolean("success", true) })
     } catch (e: Exception) {
       promise.resolve(Arguments.createMap().apply {
@@ -474,28 +585,31 @@ class DownloaderModule(private val reactContext: ReactApplicationContext) :
         val fileSize = file.length()
         var lastProgress = -1
 
-        while (fileInput.read(buffer).also { bytesRead = it } != -1) {
-          output.write(buffer, 0, bytesRead)
-          totalUploaded += bytesRead
-          
-          if (fileSize > 0) {
-            val progress = (totalUploaded * 100 / fileSize).toInt()
-            if (progress > lastProgress) {
-              lastProgress = progress
-              val evt = Arguments.createMap().apply {
-                putString("url", urlString)
-                putInt("progress", progress)
+        try {
+          while (fileInput.read(buffer).also { bytesRead = it } != -1) {
+            output.write(buffer, 0, bytesRead)
+            totalUploaded += bytesRead
+
+            if (fileSize > 0) {
+              val progress = (totalUploaded * 100 / fileSize).toInt()
+              if (progress > lastProgress) {
+                lastProgress = progress
+                val evt = Arguments.createMap().apply {
+                  putString("url", urlString)
+                  putInt("progress", progress)
+                }
+                emit("onUploadProgress", evt)
               }
-              emit("onUploadProgress", evt)
             }
           }
+          output.flush()
+          writer.write(lineEnd)
+          writer.write(twoHyphens + boundary + twoHyphens + lineEnd)
+          writer.flush()
+          writer.close()
+        } finally {
+          try { fileInput.close() } catch (_: Exception) {}
         }
-        output.flush()
-        writer.write(lineEnd)
-        writer.write(twoHyphens + boundary + twoHyphens + lineEnd)
-        writer.flush()
-        writer.close()
-        fileInput.close()
 
         val responseCode = connection.responseCode
         val responseBody = if (responseCode in 200..299) {

@@ -1,6 +1,6 @@
 {
   "name": "rn-downloader",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "The simplest and most reliable way to download files in React Native with progress, permissions, and file handling built-in.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -75,7 +75,9 @@
     "file-viewer",
     "document-viewer",
     "share-dialog",
-    "native-share"
+    "native-share",
+    "auto-retry",
+    "retry"
   ],
   "repository": {
     "type": "git",

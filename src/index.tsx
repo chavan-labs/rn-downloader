@@ -39,6 +39,31 @@ export interface DownloadOptions {
   };
   /** Called with progress 0–100 during foreground downloads */
   onProgress?: (percent: number) => void;
+  /**
+   * Auto-retry on network failure with exponential backoff.
+   * Only retries on network errors (timeouts, connection drops).
+   * Server errors (4xx/5xx) and checksum mismatches are NOT retried.
+   *
+   * @example
+   * ```ts
+   * download({
+   *   url: '...',
+   *   retry: {
+   *     attempts: 3,
+   *     delay: 1000,       // 1s → 2s → 4s (doubles each time, capped at 30s)
+   *     onRetry: (attempt, error) => console.log(`Retry #${attempt}: ${error}`),
+   *   }
+   * })
+   * ```
+   */
+  retry?: {
+    /** Maximum number of retry attempts (default: 0 = no retry) */
+    attempts: number;
+    /** Base delay in ms between retries. Doubles each attempt (default: 1000) */
+    delay?: number;
+    /** Called just before each retry attempt */
+    onRetry?: (attempt: number, error: string) => void;
+  };
 }
 
 export interface UploadOptions {
@@ -185,20 +210,49 @@ export async function download(
 ): Promise<DownloadResult> {
   let progressSubscription: ReturnType<typeof eventEmitter.addListener> | null =
     null;
+  let retrySubscription: ReturnType<typeof eventEmitter.addListener> | null =
+    null;
+
+  // downloadId is resolved immediately on Android foreground, allowing
+  // ID-based event filtering. On iOS it only arrives on completion, so we
+  // fall back to URL-based filtering in that case.
+  let knownDownloadId: string | null = null;
 
   if (options.onProgress) {
     progressSubscription = eventEmitter.addListener(
       'onDownloadProgress',
       (event: any) => {
-        if (event.url === options.url && options.onProgress) {
+        const matchesId =
+          knownDownloadId && event.downloadId === knownDownloadId;
+        const matchesUrl = !knownDownloadId && event.url === options.url;
+        if ((matchesId || matchesUrl) && options.onProgress) {
           options.onProgress(event.progress);
         }
       }
     );
   }
 
+  if (options.retry?.onRetry) {
+    retrySubscription = eventEmitter.addListener(
+      'onDownloadRetry',
+      (event: any) => {
+        const matchesId =
+          knownDownloadId && event.downloadId === knownDownloadId;
+        const matchesUrl = !knownDownloadId && event.url === options.url;
+        if ((matchesId || matchesUrl) && options.retry?.onRetry) {
+          options.retry.onRetry(event.attempt, event.error ?? '');
+        }
+      }
+    );
+  }
+
+  const cleanup = () => {
+    progressSubscription?.remove();
+    retrySubscription?.remove();
+  };
+
   try {
-    const result = await (DownloaderSpec as any).download({
+    const resultPromise = (DownloaderSpec as any).download({
       url: options.url,
       fileName: options.fileName,
       background: options.background ?? false,
@@ -207,17 +261,30 @@ export async function download(
       notificationTitle: options.notificationTitle,
       notificationDescription: options.notificationDescription,
       checksum: options.checksum,
+      retry: options.retry
+        ? {
+            attempts: options.retry.attempts,
+            delay: options.retry.delay ?? 1000,
+          }
+        : undefined,
     });
 
-    if (progressSubscription) {
-      progressSubscription.remove();
-    }
+    // On Android foreground the promise resolves immediately with downloadId,
+    // giving us a precise ID to filter events by before download completes.
+    // On iOS it only resolves on completion, so knownDownloadId stays null
+    // and URL-based filtering is used as the fallback.
+    resultPromise.then?.((partial: any) => {
+      if (partial?.downloadId && !partial?.filePath) {
+        // Android early-resolve: has downloadId but no filePath yet
+        knownDownloadId = partial.downloadId;
+      }
+    });
 
+    const result = await resultPromise;
+    cleanup();
     return result as DownloadResult;
   } catch (error: any) {
-    if (progressSubscription) {
-      progressSubscription.remove();
-    }
+    cleanup();
     return { success: false, error: error?.message || 'UNKNOWN_ERROR' };
   }
 }
@@ -404,6 +471,21 @@ export function onUploadProgress(
   return () => sub.remove();
 }
 
+/**
+ * Subscribe to download retry events (fired before each retry attempt).
+ * Returns an unsubscribe function.
+ */
+export function onDownloadRetry(
+  callback: (result: {
+    downloadId: string;
+    url: string;
+    attempt: number;
+  }) => void
+): () => void {
+  const sub = eventEmitter.addListener('onDownloadRetry', callback as any);
+  return () => sub.remove();
+}
+
 // ─── saveBase64AsFile ─────────────────────────────────────────────────────────
 
 /**
@@ -573,8 +655,19 @@ export async function openFile(
 export default {
   download,
   upload,
+  pauseDownload,
+  resumeDownload,
+  cancelDownload,
+  getCachedFiles,
+  deleteFile,
+  clearCache,
+  getBackgroundDownloads,
   saveBase64AsFile,
   urlToBase64,
   shareFile,
   openFile,
+  onDownloadComplete,
+  onDownloadError,
+  onUploadProgress,
+  onDownloadRetry,
 };

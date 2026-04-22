@@ -2,9 +2,10 @@
 #import <React/RCTLog.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <UIKit/UIKit.h>
+#import "Downloader.h"
 
 // ─── Foreground session delegate ──────────────────────────────────────────────
-@interface Downloader () <NSURLSessionDownloadDelegate, UIDocumentInteractionControllerDelegate>
+@interface Downloader () <NSURLSessionDownloadDelegate, NSURLSessionDataDelegate, UIDocumentInteractionControllerDelegate>
 @property (nonatomic, strong) NSURLSession *fgSession;       // foreground
 @property (nonatomic, strong) NSURLSession *bgSession;       // background
 // downloadId → resolve/reject blocks
@@ -17,6 +18,15 @@
 @property (nonatomic, strong) NSMutableDictionary *resumeDataStore;
 // NSURLSessionTask identifier (int) → downloadId (string)
 @property (nonatomic, strong) NSMutableDictionary *taskIdMap;
+// downloadId → current retry attempt count (NSNumber)
+@property (nonatomic, strong) NSMutableDictionary *retryAttempts;
+// Upload tracking
+@property (nonatomic, strong) NSMutableDictionary *uploadPromises;     // uploadId → {resolve, reject}
+@property (nonatomic, strong) NSMutableDictionary *uploadUrls;         // uploadId → URL string
+@property (nonatomic, strong) NSMutableDictionary *uploadResponseData; // uploadId → NSMutableData
+@property (nonatomic, strong) NSMutableDictionary *uploadTaskIdMap;    // taskIdentifier → uploadId
+// Strong ref to prevent ARC deallocation during preview
+@property (nonatomic, strong) UIDocumentInteractionController *documentController;
 @end
 
 @implementation Downloader
@@ -30,6 +40,11 @@ RCT_EXPORT_MODULE()
         self.activeTasks     = [NSMutableDictionary new];
         self.resumeDataStore = [NSMutableDictionary new];
         self.taskIdMap       = [NSMutableDictionary new];
+        self.retryAttempts   = [NSMutableDictionary new];
+        self.uploadPromises  = [NSMutableDictionary new];
+        self.uploadUrls      = [NSMutableDictionary new];
+        self.uploadResponseData = [NSMutableDictionary new];
+        self.uploadTaskIdMap = [NSMutableDictionary new];
 
         // Foreground session
         NSURLSessionConfiguration *fgConfig = [NSURLSessionConfiguration defaultSessionConfiguration];
@@ -46,7 +61,7 @@ RCT_EXPORT_MODULE()
 }
 
 - (NSArray<NSString *> *)supportedEvents {
-    return @[@"onDownloadProgress", @"onDownloadComplete", @"onDownloadError", @"onUploadProgress"];
+    return @[@"onDownloadProgress", @"onDownloadComplete", @"onDownloadError", @"onUploadProgress", @"onDownloadRetry"];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -203,47 +218,58 @@ RCT_EXPORT_MODULE()
         [self.activeTasks removeObjectForKey:downloadId];
     }
     [self.resumeDataStore removeObjectForKey:downloadId];
-    [self.activePromises removeObjectForKey:downloadId];
+    [self.activePromises  removeObjectForKey:downloadId];
     [self.downloadOptions removeObjectForKey:downloadId];
+    [self.retryAttempts   removeObjectForKey:downloadId];
     resolve(@{@"success": @YES});
 }
 
 // ─── getCachedFiles ───────────────────────────────────────────────────────────
 
 - (void)getCachedFiles:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+    NSMutableArray *result = [NSMutableArray new];
+
+    // Scan all three directories: Downloads, Caches, Documents
     NSURL *downloadsDir = [[NSFileManager defaultManager]
         URLsForDirectory:NSDownloadsDirectory inDomains:NSUserDomainMask].firstObject;
     if (!downloadsDir) {
-        // Fallback for iOS < 16
-        NSURL *docsDir = [[NSFileManager defaultManager]
+        NSURL *fallbackDocs = [[NSFileManager defaultManager]
             URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
-        downloadsDir = [docsDir URLByAppendingPathComponent:@"Downloads"];
+        downloadsDir = [fallbackDocs URLByAppendingPathComponent:@"Downloads"];
     }
+    NSURL *cacheDir = [[NSFileManager defaultManager]
+        URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *docsDir = [[NSFileManager defaultManager]
+        URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
 
-    NSError *error;
-    NSArray<NSURL *> *files = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtURL:downloadsDir
-        includingPropertiesForKeys:@[NSURLFileSizeKey, NSURLContentModificationDateKey]
-        options:NSDirectoryEnumerationSkipsHiddenFiles
-        error:&error];
+    NSMutableArray<NSURL *> *dirs = [NSMutableArray new];
+    if (downloadsDir) [dirs addObject:downloadsDir];
+    if (cacheDir) [dirs addObject:cacheDir];
+    if (docsDir) [dirs addObject:docsDir];
 
-    if (error) {
-        resolve(@{@"success": @NO, @"error": error.localizedDescription});
-        return;
-    }
+    for (NSURL *dirURL in dirs) {
+        NSArray<NSURL *> *files = [[NSFileManager defaultManager]
+            contentsOfDirectoryAtURL:dirURL
+            includingPropertiesForKeys:@[NSURLFileSizeKey, NSURLContentModificationDateKey, NSURLIsDirectoryKey]
+            options:NSDirectoryEnumerationSkipsHiddenFiles
+            error:nil];
 
-    NSMutableArray *result = [NSMutableArray new];
-    for (NSURL *fileURL in files) {
-        NSNumber *size;
-        NSDate *modDate;
-        [fileURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
-        [fileURL getResourceValue:&modDate forKey:NSURLContentModificationDateKey error:nil];
-        [result addObject:@{
-            @"fileName": fileURL.lastPathComponent,
-            @"filePath": fileURL.path,
-            @"size":     size ?: @0,
-            @"modifiedAt": @((long long)([modDate timeIntervalSince1970] * 1000))
-        }];
+        for (NSURL *fileURL in files) {
+            NSNumber *isDir;
+            [fileURL getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
+            if ([isDir boolValue]) continue; // skip directories
+
+            NSNumber *size;
+            NSDate *modDate;
+            [fileURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+            [fileURL getResourceValue:&modDate forKey:NSURLContentModificationDateKey error:nil];
+            [result addObject:@{
+                @"fileName": fileURL.lastPathComponent,
+                @"filePath": fileURL.path,
+                @"size":     size ?: @0,
+                @"modifiedAt": @((long long)([modDate timeIntervalSince1970] * 1000))
+            }];
+        }
     }
 
     resolve(@{@"success": @YES, @"files": result});
@@ -264,29 +290,26 @@ RCT_EXPORT_MODULE()
 // ─── clearCache ───────────────────────────────────────────────────────────────
 
 - (void)clearCache:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
-    NSURL *downloadsDir = [[NSFileManager defaultManager]
-        URLsForDirectory:NSDownloadsDirectory inDomains:NSUserDomainMask].firstObject;
-    if (!downloadsDir) {
-        // Fallback for iOS < 16
-        NSURL *docsDir = [[NSFileManager defaultManager]
-            URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
-        downloadsDir = [docsDir URLByAppendingPathComponent:@"Downloads"];
-    }
+    // Only clear app-private directories — never touch Downloads
+    NSURL *cacheDir = [[NSFileManager defaultManager]
+        URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *docsDir = [[NSFileManager defaultManager]
+        URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
 
-    NSError *error;
-    NSArray<NSURL *> *files = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtURL:downloadsDir
-        includingPropertiesForKeys:nil
-        options:NSDirectoryEnumerationSkipsHiddenFiles
-        error:&error];
+    NSMutableArray<NSURL *> *dirs = [NSMutableArray new];
+    if (cacheDir) [dirs addObject:cacheDir];
+    if (docsDir) [dirs addObject:docsDir];
 
-    if (error) {
-        resolve(@{@"success": @NO, @"error": error.localizedDescription});
-        return;
-    }
+    for (NSURL *dirURL in dirs) {
+        NSArray<NSURL *> *files = [[NSFileManager defaultManager]
+            contentsOfDirectoryAtURL:dirURL
+            includingPropertiesForKeys:nil
+            options:NSDirectoryEnumerationSkipsHiddenFiles
+            error:nil];
 
-    for (NSURL *fileURL in files) {
-        [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
+        for (NSURL *fileURL in files) {
+            [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
+        }
     }
     resolve(@{@"success": @YES});
 }
@@ -351,7 +374,9 @@ didFinishDownloadingToURL:(NSURL *)location {
     [[NSFileManager defaultManager] moveItemAtURL:location toURL:destURL error:&error];
 
     NSDictionary *resultDict;
+    BOOL isError = NO;
     if (error) {
+        isError = YES;
         resultDict = @{@"success": @NO, @"downloadId": downloadId, @"error": error.localizedDescription};
     } else {
         // Checksum verification
@@ -362,6 +387,7 @@ didFinishDownloadingToURL:(NSURL *)location {
             NSString *actualHash = [self calculateChecksumForPath:destURL.path algorithm:algo.uppercaseString];
             if (![actualHash.lowercaseString isEqualToString:expectedHash.lowercaseString]) {
                 [[NSFileManager defaultManager] removeItemAtURL:destURL error:nil];
+                isError = YES;
                 resultDict = @{
                     @"success": @NO,
                     @"downloadId": downloadId,
@@ -383,8 +409,8 @@ didFinishDownloadingToURL:(NSURL *)location {
         RCTPromiseResolveBlock resolve = funcs[@"resolve"];
         resolve(resultDict);
     } else {
-        // Background: fire event
-        NSString *event = error ? @"onDownloadError" : @"onDownloadComplete";
+        // Background: fire the correct event based on isError flag (Bug #1 fix)
+        NSString *event = isError ? @"onDownloadError" : @"onDownloadComplete";
         [self sendEventWithName:event body:resultDict];
     }
 
@@ -392,21 +418,116 @@ didFinishDownloadingToURL:(NSURL *)location {
     [self.downloadOptions removeObjectForKey:downloadId];
     [self.activeTasks     removeObjectForKey:downloadId];
     [self.taskIdMap       removeObjectForKey:taskKey];
+    [self.retryAttempts   removeObjectForKey:downloadId];
 }
 
 - (void)URLSession:(NSURLSession *)session
               task:(NSURLSessionTask *)task
 didCompleteWithError:(NSError *)error {
+    NSString *taskKey = [NSString stringWithFormat:@"%lu", (unsigned long)task.taskIdentifier];
+
+    // ── Upload task completion ─────────────────────────────────────────────
+    NSString *uploadId = self.uploadTaskIdMap[taskKey];
+    if (uploadId) {
+        NSDictionary *funcs = self.uploadPromises[uploadId];
+        RCTPromiseResolveBlock uploadResolve = funcs[@"resolve"];
+
+        if (error) {
+            if (uploadResolve) uploadResolve(@{@"success": @NO, @"error": error.localizedDescription});
+        } else {
+            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
+            NSData *responseData = self.uploadResponseData[uploadId] ?: [NSData data];
+            NSString *respString = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding] ?: @"";
+
+            if (uploadResolve) uploadResolve(@{
+                @"success": @(httpResponse.statusCode >= 200 && httpResponse.statusCode < 300),
+                @"status": @(httpResponse.statusCode),
+                @"data": respString
+            });
+        }
+
+        [self.uploadPromises removeObjectForKey:uploadId];
+        [self.uploadUrls removeObjectForKey:uploadId];
+        [self.uploadResponseData removeObjectForKey:uploadId];
+        [self.uploadTaskIdMap removeObjectForKey:taskKey];
+        return;
+    }
+
+    // ── Download task error handling ───────────────────────────────────────
     if (!error) return;
     // Ignore cancellation
     if (error.code == NSURLErrorCancelled) return;
 
-    NSString *taskKey = [NSString stringWithFormat:@"%lu", (unsigned long)task.taskIdentifier];
     NSString *downloadId = self.taskIdMap[taskKey];
     if (!downloadId) return;
 
     NSDictionary *options = self.downloadOptions[downloadId];
     BOOL isBackground = [options[@"background"] boolValue];
+
+    // ── Retry logic ────────────────────────────────────────────────────────
+    NSDictionary *retryConfig = options[@"retry"];
+    NSInteger maxAttempts = retryConfig ? [retryConfig[@"attempts"] integerValue] : 0;
+    NSInteger baseDelay   = retryConfig ? ([retryConfig[@"delay"] integerValue] ?: 1000) : 1000;
+    NSInteger currentAttempt = [self.retryAttempts[downloadId] integerValue];
+
+    // Remove old task mapping — will be replaced on retry
+    [self.taskIdMap  removeObjectForKey:taskKey];
+    [self.activeTasks removeObjectForKey:downloadId];
+
+    if (currentAttempt < maxAttempts) {
+        // Schedule a retry
+        NSInteger nextAttempt = currentAttempt + 1;
+        self.retryAttempts[downloadId] = @(nextAttempt);
+
+        // Bug #4 fix: avoid integer overflow — cap shift operand, then apply MIN
+        NSInteger shiftBits = currentAttempt < 15 ? currentAttempt : 15;
+        NSInteger delayMs = MIN(baseDelay * (1 << shiftBits), (NSInteger)30000);
+
+        // Emit retry event so JS onRetry callback is called
+        // Bug #3 fix: include the error description that triggered this retry
+        [self sendEventWithName:@"onDownloadRetry" body:@{
+            @"downloadId": downloadId,
+            @"url": options[@"url"] ?: @"",
+            @"attempt": @(nextAttempt),
+            @"error": error.localizedDescription ?: @""
+        }];
+
+        // Bug #2 fix: use __weak self to avoid retain cycle and crash on dealloc during delay
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayMs * NSEC_PER_MSEC)),
+            dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+            ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return; // module deallocated during delay — bail safely
+
+                // Recreate task with same options & downloadId
+                NSString *urlString = options[@"url"];
+                if (!urlString) return;
+                NSURL *url = [NSURL URLWithString:urlString];
+                if (!url) return;
+                NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+                NSDictionary *headers = options[@"headers"];
+                if (headers) {
+                    for (NSString *key in headers) {
+                        [request setValue:headers[key] forHTTPHeaderField:key];
+                    }
+                }
+                NSURLSession *sess = isBackground ? strongSelf.bgSession : strongSelf.fgSession;
+                NSURLSessionDownloadTask *newTask = [sess downloadTaskWithRequest:request];
+                NSString *newTaskKey = [NSString stringWithFormat:@"%lu",
+                                        (unsigned long)newTask.taskIdentifier];
+                strongSelf.taskIdMap[newTaskKey]      = downloadId;
+                strongSelf.activeTasks[downloadId]   = newTask;
+                newTask.taskDescription              = downloadId;
+                [newTask resume];
+            }
+        );
+        return; // Don't resolve promise yet — retry is in flight
+    }
+
+    // ── No more retries — normal error path ────────────────────────────────
+    [self.retryAttempts removeObjectForKey:downloadId];
 
     NSDictionary *errDict = @{@"success": @NO, @"downloadId": downloadId, @"error": error.localizedDescription};
 
@@ -420,8 +541,42 @@ didCompleteWithError:(NSError *)error {
 
     [self.activePromises  removeObjectForKey:downloadId];
     [self.downloadOptions removeObjectForKey:downloadId];
-    [self.activeTasks     removeObjectForKey:downloadId];
-    [self.taskIdMap       removeObjectForKey:taskKey];
+}
+
+// ─── Upload progress delegate ────────────────────────────────────────────────
+
+- (void)URLSession:(NSURLSession *)session
+              task:(NSURLSessionTask *)task
+   didSendBodyData:(int64_t)bytesSent
+    totalBytesSent:(int64_t)totalBytesSent
+totalBytesExpectedToSend:(int64_t)totalBytesExpectedToSend {
+    NSString *taskKey = [NSString stringWithFormat:@"%lu", (unsigned long)task.taskIdentifier];
+    NSString *uploadId = self.uploadTaskIdMap[taskKey];
+    if (!uploadId) return;
+
+    NSString *url = self.uploadUrls[uploadId] ?: @"";
+    if (totalBytesExpectedToSend > 0) {
+        int progress = (int)((totalBytesSent * 100) / totalBytesExpectedToSend);
+        [self sendEventWithName:@"onUploadProgress"
+                           body:@{@"url": url, @"progress": @(progress)}];
+    }
+}
+
+// ─── Upload response data accumulation ───────────────────────────────────────
+
+- (void)URLSession:(NSURLSession *)session
+          dataTask:(NSURLSessionDataTask *)dataTask
+    didReceiveData:(NSData *)data {
+    NSString *taskKey = [NSString stringWithFormat:@"%lu", (unsigned long)dataTask.taskIdentifier];
+    NSString *uploadId = self.uploadTaskIdMap[taskKey];
+    if (!uploadId) return;
+
+    NSMutableData *responseData = self.uploadResponseData[uploadId];
+    if (!responseData) {
+        responseData = [NSMutableData new];
+        self.uploadResponseData[uploadId] = responseData;
+    }
+    [responseData appendData:data];
 }
 
 // ─── TurboModule ──────────────────────────────────────────────────────────────
@@ -477,22 +632,15 @@ didCompleteWithError:(NSError *)error {
     [body appendData:[@"\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
     [body appendData:[[NSString stringWithFormat:@"--%@--\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
 
-    NSURLSessionUploadTask *task = [[NSURLSession sharedSession] uploadTaskWithRequest:request fromData:body completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (error) {
-            resolve(@{@"success": @NO, @"error": error.localizedDescription});
-        } else {
-            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
-            NSString *respData = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            resolve(@{
-                @"success": @(httpResponse.statusCode >= 200 && httpResponse.statusCode < 300),
-                @"status": @(httpResponse.statusCode),
-                @"data": respData ?: @""
-            });
-        }
-    }];
-    
-    // Note: URLSessionUploadTask doesn't have a simple progress delegate for fromData: uploads without using a delegate-based session.
-    // For simplicity in this step, we'll skip progress for now or refactor to delegate later if needed.
+    // Use delegate-based session for upload progress support
+    NSString *uploadId = [self generateDownloadId];
+    NSURLSessionUploadTask *task = [self.fgSession uploadTaskWithRequest:request fromData:body];
+    NSString *taskKey = [NSString stringWithFormat:@"%lu", (unsigned long)task.taskIdentifier];
+
+    self.uploadTaskIdMap[taskKey] = uploadId;
+    self.uploadPromises[uploadId] = @{@"resolve": resolve, @"reject": reject};
+    self.uploadUrls[uploadId] = urlString;
+
     [task resume];
 }
 
@@ -684,14 +832,14 @@ RCT_REMAP_METHOD(openFile,
         }
         
         // Use UIDocumentInteractionController for opening files
-        UIDocumentInteractionController *documentController = [UIDocumentInteractionController interactionControllerWithURL:fileURL];
-        documentController.delegate = (id<UIDocumentInteractionControllerDelegate>)self;
+        self.documentController = [UIDocumentInteractionController interactionControllerWithURL:fileURL];
+        self.documentController.delegate = (id<UIDocumentInteractionControllerDelegate>)self;
         
-        BOOL canOpen = [documentController presentPreviewAnimated:YES];
+        BOOL canOpen = [self.documentController presentPreviewAnimated:YES];
         
         if (!canOpen) {
             // Fallback: Try to open with options menu
-            canOpen = [documentController presentOptionsMenuFromRect:CGRectMake(rootViewController.view.bounds.size.width / 2,
+            canOpen = [self.documentController presentOptionsMenuFromRect:CGRectMake(rootViewController.view.bounds.size.width / 2,
                                                                                  rootViewController.view.bounds.size.height / 2,
                                                                                  0, 0)
                                                               inView:rootViewController.view
